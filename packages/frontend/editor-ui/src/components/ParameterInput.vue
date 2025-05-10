@@ -68,7 +68,7 @@ import { createEventBus } from '@n8n/utils/event-bus';
 import { useRouter } from 'vue-router';
 import { useElementSize } from '@vueuse/core';
 import { captureMessage } from '@sentry/vue';
-import { completeExpressionSyntax, isStringWithExpressionSyntax } from '@/utils/expressions';
+import { completeExpressionSyntax, shouldConvertToExpression } from '@/utils/expressions';
 import { isPresent } from '@/utils/typesUtils';
 import CssEditor from './CssEditor/CssEditor.vue';
 
@@ -346,6 +346,7 @@ const getIssues = computed<string[]>(() => {
 		node.value.parameters,
 		newPath.join('.'),
 		node.value,
+		nodeTypesStore.getNodeType(node.value.type, node.value.typeVersion),
 	);
 
 	if (props.parameter.type === 'credentialsSelect' && displayValue.value === '') {
@@ -396,6 +397,21 @@ const getIssues = computed<string[]>(() => {
 		issues.parameters[props.parameter.name] = [
 			`There was a problem loading the parameter options from server: "${remoteParameterOptionsLoadingIssues.value}"`,
 		];
+	} else if (props.parameter.type === 'workflowSelector') {
+		const selected = modelValueResourceLocator.value?.value;
+		if (selected) {
+			const isSelectedArchived = workflowsStore.allWorkflows.some(
+				(resource) => resource.id === selected && resource.isArchived,
+			);
+
+			if (isSelectedArchived) {
+				if (issues.parameters === undefined) {
+					issues.parameters = {};
+				}
+				const issue = i18n.baseText('parameterInput.selectedWorkflowIsArchived');
+				issues.parameters[props.parameter.name] = [issue];
+			}
+		}
 	}
 
 	if (issues?.parameters?.[props.parameter.name] !== undefined) {
@@ -853,7 +869,13 @@ function valueChanged(value: NodeParameterValueType | {} | Date) {
 		return;
 	}
 
-	if (!oldValue && oldValue !== undefined && isStringWithExpressionSyntax(value)) {
+	const isSpecializedEditor = props.parameter.typeOptions?.editor !== undefined;
+
+	if (
+		!oldValue &&
+		oldValue !== undefined &&
+		shouldConvertToExpression(value, isSpecializedEditor)
+	) {
 		// if empty old value and updated value has an expression, add '=' prefix to switch to expression mode
 		value = '=' + value;
 	}
@@ -862,7 +884,7 @@ function valueChanged(value: NodeParameterValueType | {} | Date) {
 		activeCredentialType.value = value as string;
 	}
 
-	value = completeExpressionSyntax(value);
+	value = completeExpressionSyntax(value, isSpecializedEditor);
 
 	if (value instanceof Date) {
 		value = value.toISOString();

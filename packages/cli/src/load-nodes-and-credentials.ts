@@ -18,13 +18,12 @@ import type {
 	KnownNodesAndCredentials,
 	INodeTypeBaseDescription,
 	INodeTypeDescription,
-	INodeTypeData,
-	ICredentialTypeData,
 	LoadedClass,
 	ICredentialType,
 	INodeType,
 	IVersionedNodeType,
 	INodeProperties,
+	LoadedNodesAndCredentials,
 } from 'n8n-workflow';
 import { deepCopy, NodeConnectionTypes, UnexpectedError, UserError } from 'n8n-workflow';
 import path from 'path';
@@ -38,11 +37,6 @@ import {
 	inE2ETests,
 } from '@/constants';
 import { isContainedWithin } from '@/utils/path-util';
-
-interface LoadedNodesAndCredentials {
-	nodes: INodeTypeData;
-	credentials: ICredentialTypeData;
-}
 
 @Service()
 export class LoadNodesAndCredentials {
@@ -100,11 +94,13 @@ export class LoadNodesAndCredentials {
 			await this.loadNodesFromNodeModules(nodeModulesDir, '@n8n/n8n-nodes-langchain');
 		}
 
-		// Load nodes from any other `n8n-nodes-*` packages in the download directory
-		// This includes the community nodes
-		await this.loadNodesFromNodeModules(
-			path.join(this.instanceSettings.nodesDownloadDir, 'node_modules'),
-		);
+		if (!this.globalConfig.nodes.communityPackages.preventLoading) {
+			// Load nodes from any other `n8n-nodes-*` packages in the download directory
+			// This includes the community nodes
+			await this.loadNodesFromNodeModules(
+				path.join(this.instanceSettings.nodesDownloadDir, 'node_modules'),
+			);
+		}
 
 		await this.loadNodesFromCustomDirectories();
 		await this.postProcessLoaders();
@@ -323,6 +319,8 @@ export class LoadNodesAndCredentials {
 						} as INodeTypeBaseDescription)
 					: deepCopy(usableNode);
 			const wrapped = this.convertNodeToAiTool({ description }).description;
+			// TODO: Remove this when we support partial execution on all tool nodes
+			wrapped.usableAsTool = true;
 
 			this.types.nodes.push(wrapped);
 			this.known.nodes[wrapped.name] = { ...this.known.nodes[usableNode.name] };
@@ -404,6 +402,13 @@ export class LoadNodesAndCredentials {
 		for (const postProcessor of this.postProcessors) {
 			await postProcessor();
 		}
+	}
+
+	recognizesNode(fullNodeType: string): boolean {
+		const [packageName, nodeType] = fullNodeType.split('.');
+		const { loaders } = this;
+		const loader = loaders[packageName];
+		return !!loader && nodeType in loader.known.nodes;
 	}
 
 	getNode(fullNodeType: string): LoadedClass<INodeType | IVersionedNodeType> {

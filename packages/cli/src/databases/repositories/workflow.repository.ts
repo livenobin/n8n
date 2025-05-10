@@ -1,4 +1,13 @@
 import { GlobalConfig } from '@n8n/config';
+import type { ListQueryDb, Folder, FolderWithWorkflowAndSubFolderCount } from '@n8n/db';
+import {
+	isStringArray,
+	WebhookEntity,
+	TagEntity,
+	WorkflowEntity,
+	WorkflowTagMapping,
+	FolderRepository,
+} from '@n8n/db';
 import { Service } from '@n8n/di';
 import { DataSource, Repository, In, Like } from '@n8n/typeorm';
 import type {
@@ -13,14 +22,6 @@ import type {
 import { PROJECT_ROOT } from 'n8n-workflow';
 
 import type { ListQuery } from '@/requests';
-import { isStringArray } from '@/utils';
-
-import { FolderRepository } from './folder.repository';
-import type { Folder, FolderWithWorkflowAndSubFolderCount } from '../entities/folder';
-import { TagEntity } from '../entities/tag-entity';
-import { WebhookEntity } from '../entities/webhook-entity';
-import { WorkflowEntity } from '../entities/workflow-entity';
-import { WorkflowTagMapping } from '../entities/workflow-tag-mapping';
 
 type ResourceType = 'folder' | 'workflow';
 
@@ -34,8 +35,8 @@ type WorkflowFolderUnionRow = {
 };
 
 export type WorkflowFolderUnionFull = (
-	| ListQuery.Workflow.Plain
-	| ListQuery.Workflow.WithSharing
+	| ListQueryDb.Workflow.Plain
+	| ListQueryDb.Workflow.WithSharing
 	| FolderWithWorkflowAndSubFolderCount
 ) & {
 	resource: ResourceType;
@@ -264,12 +265,32 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 	}
 
 	async getWorkflowsAndFoldersWithCount(workflowIds: string[], options: ListQuery.Options = {}) {
+		if (
+			options.filter?.parentFolderId &&
+			typeof options.filter?.parentFolderId === 'string' &&
+			options.filter.parentFolderId !== PROJECT_ROOT &&
+			typeof options.filter?.projectId === 'string' &&
+			options.filter.name
+		) {
+			const folderIds = await this.folderRepository.getAllFolderIdsInHierarchy(
+				options.filter.parentFolderId,
+				options.filter.projectId,
+			);
+
+			options.filter.parentFolderIds = [options.filter.parentFolderId, ...folderIds];
+			options.filter.folderIds = folderIds;
+			delete options.filter.parentFolderId;
+		}
+
 		const [workflowsAndFolders, count] = await Promise.all([
 			this.getWorkflowsAndFoldersUnion(workflowIds, options),
 			this.getWorkflowsAndFoldersCount(workflowIds, options),
 		]);
 
-		const { workflows, folders } = await this.fetchExtraData(workflowsAndFolders);
+		const isArchived =
+			typeof options.filter?.isArchived === 'boolean' ? options.filter.isArchived : undefined;
+
+		const { workflows, folders } = await this.fetchExtraData(workflowsAndFolders, isArchived);
 
 		const enrichedWorkflowsAndFolders = this.enrichDataWithExtras(workflowsAndFolders, {
 			workflows,
@@ -277,6 +298,22 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 		});
 
 		return [enrichedWorkflowsAndFolders, count] as const;
+	}
+
+	async getAllWorkflowIdsInHierarchy(folderId: string, projectId: string): Promise<string[]> {
+		const subFolderIds = await this.folderRepository.getAllFolderIdsInHierarchy(
+			folderId,
+			projectId,
+		);
+
+		const query = this.createQueryBuilder('workflow');
+
+		this.applySelect(query, { id: true });
+		this.applyParentFolderFilter(query, { parentFolderIds: [folderId, ...subFolderIds] });
+
+		const workflowIds = (await query.getMany()).map((workflow) => workflow.id);
+
+		return workflowIds;
 	}
 
 	private getFolderIds(workflowsAndFolders: WorkflowFolderUnionRow[]) {
@@ -289,13 +326,16 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 			.map((item) => item.id);
 	}
 
-	private async fetchExtraData(workflowsAndFolders: WorkflowFolderUnionRow[]) {
+	private async fetchExtraData(
+		workflowsAndFolders: WorkflowFolderUnionRow[],
+		isArchived?: boolean,
+	) {
 		const workflowIds = this.getWorkflowsIds(workflowsAndFolders);
 		const folderIds = this.getFolderIds(workflowsAndFolders);
 
 		const [workflows, folders] = await Promise.all([
 			this.getMany(workflowIds),
-			this.folderRepository.getMany({ filter: { folderIds } }),
+			this.folderRepository.getMany({ filter: { folderIds, isArchived } }),
 		]);
 
 		return { workflows, folders };
@@ -304,7 +344,7 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 	private enrichDataWithExtras(
 		baseData: WorkflowFolderUnionRow[],
 		extraData: {
-			workflows: ListQuery.Workflow.WithSharing[] | ListQuery.Workflow.Plain[];
+			workflows: ListQueryDb.Workflow.WithSharing[] | ListQueryDb.Workflow.Plain[];
 			folders: Folder[];
 		},
 	): WorkflowFolderUnionFull[] {
@@ -327,8 +367,8 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 		const query = this.getManyQuery(workflowIds, options);
 
 		const workflows = (await query.getMany()) as
-			| ListQuery.Workflow.Plain[]
-			| ListQuery.Workflow.WithSharing[];
+			| ListQueryDb.Workflow.Plain[]
+			| ListQueryDb.Workflow.WithSharing[];
 
 		return workflows;
 	}
@@ -341,7 +381,7 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 		const query = this.getManyQuery(sharedWorkflowIds, options);
 
 		const [workflows, count] = (await query.getManyAndCount()) as [
-			ListQuery.Workflow.Plain[] | ListQuery.Workflow.WithSharing[],
+			ListQueryDb.Workflow.Plain[] | ListQueryDb.Workflow.WithSharing[],
 			number,
 		];
 
@@ -376,6 +416,7 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 	): void {
 		this.applyNameFilter(qb, filter);
 		this.applyActiveFilter(qb, filter);
+		this.applyIsArchivedFilter(qb, filter);
 		this.applyTagsFilter(qb, filter);
 		this.applyProjectFilter(qb, filter);
 		this.applyParentFolderFilter(qb, filter);
@@ -402,6 +443,14 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 			qb.andWhere('workflow.parentFolderId = :parentFolderId', {
 				parentFolderId: filter.parentFolderId,
 			});
+		} else if (
+			filter?.parentFolderIds &&
+			Array.isArray(filter.parentFolderIds) &&
+			filter.parentFolderIds.length > 0
+		) {
+			qb.andWhere('workflow.parentFolderId IN (:...parentFolderIds)', {
+				parentFolderIds: filter.parentFolderIds,
+			});
 		}
 	}
 
@@ -411,6 +460,15 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 	): void {
 		if (typeof filter?.active === 'boolean') {
 			qb.andWhere('workflow.active = :active', { active: filter.active });
+		}
+	}
+
+	private applyIsArchivedFilter(
+		qb: SelectQueryBuilder<WorkflowEntity>,
+		filter: ListQuery.Options['filter'],
+	): void {
+		if (typeof filter?.isArchived === 'boolean') {
+			qb.andWhere('workflow.isArchived = :isArchived', { isArchived: filter.isArchived });
 		}
 	}
 
@@ -482,6 +540,7 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 				'workflow.id',
 				'workflow.name',
 				'workflow.active',
+				'workflow.isArchived',
 				'workflow.createdAt',
 				'workflow.updatedAt',
 				'workflow.versionId',
@@ -519,7 +578,11 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 		const isParentFolderIncluded = isDefaultSelect || select?.parentFolder;
 
 		if (isParentFolderIncluded) {
-			qb.leftJoinAndSelect('workflow.parentFolder', 'parentFolder');
+			qb.leftJoin('workflow.parentFolder', 'parentFolder').addSelect([
+				'parentFolder.id',
+				'parentFolder.name',
+				'parentFolder.parentFolderId',
+			]);
 		}
 
 		if (areTagsEnabled && areTagsRequested) {
@@ -626,6 +689,13 @@ export class WorkflowRepository extends Repository<WorkflowEntity> {
 								id: toFolderId,
 							},
 			},
+		);
+	}
+
+	async moveToFolder(workflowIds: string[], toFolderId: string) {
+		await this.update(
+			{ id: In(workflowIds) },
+			{ parentFolder: toFolderId === PROJECT_ROOT ? null : { id: toFolderId } },
 		);
 	}
 }
