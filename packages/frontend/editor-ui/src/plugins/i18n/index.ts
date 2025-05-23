@@ -6,7 +6,7 @@ import type { INodeProperties, INodePropertyCollection, INodePropertyOptions } f
 import type { INodeTranslationHeaders } from '@/Interface';
 import { useUIStore } from '@/stores/ui.store';
 import { useNDVStore } from '@/stores/ndv.store';
-import { useRootStore } from '@/stores/root.store';
+import { useRootStore } from '@n8n/stores/useRootStore';
 import englishBaseText from './locales/en.json';
 import {
 	deriveMiddleKey,
@@ -91,6 +91,10 @@ export class I18nClass {
 		if (msPassed < 60000) {
 			if (!showMs) {
 				return `${Math.floor(msPassed / 1000)}${this.baseText('genericHelpers.secShort')}`;
+			}
+
+			if (msPassed > 0 && msPassed < 1000) {
+				return `${msPassed}${this.baseText('genericHelpers.millis')}`;
 			}
 
 			return `${msPassed / 1000}${this.baseText('genericHelpers.secShort')}`;

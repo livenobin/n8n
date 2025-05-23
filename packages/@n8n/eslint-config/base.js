@@ -5,6 +5,7 @@ const config = (module.exports = {
 	ignorePatterns: [
 		'node_modules/**',
 		'dist/**',
+		'tsup.config.ts',
 		// TODO: remove these
 		'*.js',
 	],
@@ -485,7 +486,6 @@ const config = (module.exports = {
 				'@typescript-eslint/restrict-template-expressions': 'off',
 				'@typescript-eslint/unbound-method': 'off',
 				'id-denylist': 'off',
-				'import/no-cycle': 'off',
 				'import/no-default-export': 'off',
 				'import/no-extraneous-dependencies': 'off',
 				'n8n-local-rules/no-uncaught-json-parse': 'off',
