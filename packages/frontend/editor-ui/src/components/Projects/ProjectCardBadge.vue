@@ -1,17 +1,22 @@
 <script lang="ts" setup>
 import { computed } from 'vue';
-import { useI18n } from '@/composables/useI18n';
-import type { ResourceType } from '@/utils/projects.utils';
-import { splitName } from '@/utils/projects.utils';
+import { useI18n } from '@n8n/i18n';
+import { ResourceType, splitName } from '@/utils/projects.utils';
 import type { Project, ProjectIcon as BadgeIcon } from '@/types/projects.types';
 import { ProjectTypes } from '@/types/projects.types';
-import type { CredentialsResource, WorkflowResource } from '../layouts/ResourcesListLayout.vue';
+import type {
+	CredentialsResource,
+	FolderResource,
+	WorkflowResource,
+} from '../layouts/ResourcesListLayout.vue';
+import { VIEWS } from '@/constants';
 
 type Props = {
-	resource: WorkflowResource | CredentialsResource;
+	resource: WorkflowResource | CredentialsResource | FolderResource;
 	resourceType: ResourceType;
 	resourceTypeLabel: string;
 	personalProject: Project | null;
+	showBadgeBorder?: boolean;
 };
 
 const enum ProjectState {
@@ -24,9 +29,15 @@ const enum ProjectState {
 	Unknown = 'unknown',
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+	showBadgeBorder: true,
+});
 
 const i18n = useI18n();
+
+const isShared = computed(() => {
+	return 'sharedWithProjects' in props.resource && props.resource.sharedWithProjects?.length;
+});
 
 const projectState = computed(() => {
 	if (
@@ -35,17 +46,17 @@ const projectState = computed(() => {
 			props.resource.homeProject.id === props.personalProject.id) ||
 		!props.resource.homeProject
 	) {
-		if (props.resource.sharedWithProjects?.length) {
+		if (isShared.value) {
 			return ProjectState.SharedOwned;
 		}
 		return ProjectState.Owned;
 	} else if (props.resource.homeProject?.type !== ProjectTypes.Team) {
-		if (props.resource.sharedWithProjects?.length) {
+		if (isShared.value) {
 			return ProjectState.SharedPersonal;
 		}
 		return ProjectState.Personal;
 	} else if (props.resource.homeProject?.type === ProjectTypes.Team) {
-		if (props.resource.sharedWithProjects?.length) {
+		if (isShared.value) {
 			return ProjectState.SharedTeam;
 		}
 		return ProjectState.Team;
@@ -53,8 +64,8 @@ const projectState = computed(() => {
 	return ProjectState.Unknown;
 });
 
-const numberOfMembersInHomeTeamProject = computed(
-	() => props.resource.sharedWithProjects?.length ?? 0,
+const numberOfMembersInHomeTeamProject = computed(() =>
+	'sharedWithProjects' in props.resource ? (props.resource.sharedWithProjects?.length ?? 0) : 0,
 );
 
 const badgeText = computed(() => {
@@ -68,10 +79,13 @@ const badgeText = computed(() => {
 		return name ?? email ?? '';
 	}
 });
+
 const badgeIcon = computed<BadgeIcon>(() => {
 	switch (projectState.value) {
 		case ProjectState.Owned:
 		case ProjectState.SharedOwned:
+		case ProjectState.Personal:
+		case ProjectState.SharedPersonal:
 			return { type: 'icon', value: 'user' };
 		case ProjectState.Team:
 		case ProjectState.SharedTeam:
@@ -123,38 +137,68 @@ const badgeTooltip = computed(() => {
 			return '';
 	}
 });
+const projectLocation = computed(() => {
+	if (
+		projectState.value !== ProjectState.Personal &&
+		projectState.value !== ProjectState.SharedPersonal &&
+		props.resource.homeProject?.id &&
+		props.resourceType === ResourceType.Workflow
+	) {
+		return {
+			name: VIEWS.PROJECTS_WORKFLOWS,
+			params: { projectId: props.resource.homeProject.id },
+		};
+	}
+	return null;
+});
 </script>
 <template>
-	<N8nTooltip :disabled="!badgeTooltip" placement="top">
-		<div :class="$style.wrapper" v-bind="$attrs">
+	<div :class="{ [$style.wrapper]: true, [$style['no-border']]: showBadgeBorder }" v-bind="$attrs">
+		<N8nTooltip :disabled="!badgeTooltip || numberOfMembersInHomeTeamProject !== 0" placement="top">
 			<N8nBadge
 				v-if="badgeText"
 				:class="[$style.badge, $style.projectBadge]"
 				theme="tertiary"
-				bold
 				data-test-id="card-badge"
+				:show-border="showBadgeBorder"
 			>
 				<ProjectIcon :icon="badgeIcon" :border-less="true" size="mini" />
-				<span v-n8n-truncate:20>{{ badgeText }}</span>
+				<router-link v-if="projectLocation" :to="projectLocation">
+					<span v-n8n-truncate:20="badgeText" />
+				</router-link>
+				<span v-else v-n8n-truncate:20="badgeText" />
 			</N8nBadge>
-			<N8nBadge
+			<template #content>
+				{{ badgeTooltip }}
+			</template>
+		</N8nTooltip>
+		<slot />
+		<N8nTooltip :disabled="!badgeTooltip || numberOfMembersInHomeTeamProject === 0" placement="top">
+			<div
 				v-if="numberOfMembersInHomeTeamProject"
-				:class="[$style.badge, $style.countBadge]"
+				:class="$style['count-badge']"
 				theme="tertiary"
 				bold
 			>
-				+ {{ numberOfMembersInHomeTeamProject }}
-			</N8nBadge>
-		</div>
-		<template #content>
-			{{ badgeTooltip }}
-		</template>
-	</N8nTooltip>
+				+{{ numberOfMembersInHomeTeamProject }}
+			</div>
+			<template #content>
+				{{ badgeTooltip }}
+			</template>
+		</N8nTooltip>
+	</div>
 </template>
 
 <style lang="scss" module>
 .wrapper {
-	margin-right: var(--spacing-xs);
+	display: flex;
+	align-items: center;
+	border: var(--border-base);
+	border-radius: var(--border-radius-base);
+
+	&.no-border {
+		border: none;
+	}
 }
 
 .badge {
@@ -165,7 +209,8 @@ const badgeTooltip = computed(() => {
 	z-index: 1;
 	position: relative;
 	height: 23px;
-	:global(.n8n-text) {
+	:global(.n8n-text),
+	a {
 		color: var(--color-text-base);
 	}
 }
@@ -177,13 +222,11 @@ const badgeTooltip = computed(() => {
 	}
 }
 
-.countBadge {
-	margin-left: -5px;
-	z-index: 0;
-	position: relative;
-	height: 23px;
-	:global(.n8n-text) {
-		color: var(--color-text-light);
-	}
+.count-badge {
+	font-size: var(--font-size-2xs);
+	padding: var(--spacing-4xs) var(--spacing-3xs);
+	color: var(--color-text-base);
+	border-left: var(--border-base);
+	line-height: var(--font-line-height-regular);
 }
 </style>
