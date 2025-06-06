@@ -1,4 +1,5 @@
 import { GlobalConfig } from '@n8n/config';
+import type { WorkflowRepository } from '@n8n/db';
 import type express from 'express';
 import promBundle from 'express-prom-bundle';
 import { mock } from 'jest-mock-extended';
@@ -6,7 +7,6 @@ import type { InstanceSettings } from 'n8n-core';
 import promClient from 'prom-client';
 
 import config from '@/config';
-import type { WorkflowRepository } from '@/databases/repositories/workflow.repository';
 import type { MessageEventBus } from '@/eventbus/message-event-bus/message-event-bus';
 import type { EventService } from '@/events/event.service';
 import { mockInstance } from '@test/mocking';
@@ -23,6 +23,8 @@ jest.mock('prom-client');
 jest.mock('express-prom-bundle', () => jest.fn(() => mockMiddleware));
 
 describe('PrometheusMetricsService', () => {
+	promClient.Counter.prototype.inc = jest.fn();
+
 	const globalConfig = mockInstance(GlobalConfig, {
 		endpoints: {
 			metrics: {
@@ -149,6 +151,7 @@ describe('PrometheusMetricsService', () => {
 			await prometheusMetricsService.init(app);
 
 			expect(promBundle).toHaveBeenCalledWith({
+				httpDurationMetricName: 'n8n_http_request_duration_seconds',
 				autoregister: false,
 				includeUp: false,
 				includePath: false,
@@ -158,8 +161,7 @@ describe('PrometheusMetricsService', () => {
 
 			expect(promClient.Gauge).toHaveBeenNthCalledWith(2, {
 				name: 'n8n_last_activity',
-				help: 'last instance activity (backend request).',
-				labelNames: ['timestamp'],
+				help: 'last instance activity (backend request) in Unix time (seconds).',
 			});
 
 			expect(app.use).toHaveBeenCalledWith(

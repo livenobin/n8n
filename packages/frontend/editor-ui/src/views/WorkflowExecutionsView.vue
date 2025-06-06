@@ -2,11 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import WorkflowExecutionsList from '@/components/executions/workflow/WorkflowExecutionsList.vue';
 import { useExecutionsStore } from '@/stores/executions.store';
-import { useI18n } from '@/composables/useI18n';
+import { useI18n } from '@n8n/i18n';
 import type { ExecutionFilterType, IWorkflowDb } from '@/Interface';
 import { useWorkflowsStore } from '@/stores/workflows.store';
 import { useNodeTypesStore } from '@/stores/nodeTypes.store';
-import { NO_NETWORK_ERROR_CODE } from '@/utils/apiUtils';
+import { NO_NETWORK_ERROR_CODE } from '@n8n/rest-api-client';
 import { useToast } from '@/composables/useToast';
 import { NEW_WORKFLOW_ID, PLACEHOLDER_EMPTY_WORKFLOW_ID, VIEWS } from '@/constants';
 import { useRoute, useRouter } from 'vue-router';
@@ -14,6 +14,7 @@ import type { ExecutionSummary } from 'n8n-workflow';
 import { useDebounce } from '@/composables/useDebounce';
 import { useTelemetry } from '@/composables/useTelemetry';
 import { useCanvasOperations } from '@/composables/useCanvasOperations';
+import { executionRetryMessage } from '@/utils/executionUtils';
 
 const executionsStore = useExecutionsStore();
 const workflowsStore = useWorkflowsStore();
@@ -25,7 +26,7 @@ const router = useRouter();
 const toast = useToast();
 const { callDebounced } = useDebounce();
 
-const { initializeWorkspace } = useCanvasOperations({ router });
+const { initializeWorkspace } = useCanvasOperations();
 
 const loading = ref(false);
 const loadingMore = ref(false);
@@ -277,18 +278,12 @@ async function onExecutionRetry(payload: { id: string; loadWorkflow: boolean }) 
 
 async function retryExecution(payload: { id: string; loadWorkflow: boolean }) {
 	try {
-		const retrySuccessful = await executionsStore.retryExecution(payload.id, payload.loadWorkflow);
+		const retryStatus = await executionsStore.retryExecution(payload.id, payload.loadWorkflow);
 
-		if (retrySuccessful) {
-			toast.showMessage({
-				title: i18n.baseText('executionsList.showMessage.retrySuccessfulTrue.title'),
-				type: 'success',
-			});
-		} else {
-			toast.showMessage({
-				title: i18n.baseText('executionsList.showMessage.retrySuccessfulFalse.title'),
-				type: 'error',
-			});
+		const retryMessage = executionRetryMessage(retryStatus);
+
+		if (retryMessage) {
+			toast.showMessage(retryMessage);
 		}
 	} catch (error) {
 		toast.showError(error, i18n.baseText('executionsList.showError.retryExecution.title'));
